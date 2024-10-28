@@ -1,0 +1,354 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Upload Speed Test</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/3.7.0/chart.min.js"></script>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            background-color: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        .speed-display {
+            font-size: 24px;
+            text-align: center;
+            margin: 20px 0;
+            padding: 10px;
+            background-color: #f8f9fa;
+            border-radius: 4px;
+        }
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 15px;
+            margin: 20px 0;
+        }
+        .stat-box {
+            background-color: #f8f9fa;
+            padding: 15px;
+            border-radius: 4px;
+            text-align: center;
+        }
+        .stat-label {
+            font-size: 14px;
+            color: #666;
+        }
+        .stat-value {
+            font-size: 20px;
+            font-weight: bold;
+            margin-top: 5px;
+        }
+        .error-message {
+            color: #dc3545;
+            padding: 10px;
+            margin: 10px 0;
+            border-radius: 4px;
+            background-color: #f8d7da;
+            display: none;
+        }
+        .controls {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 20px;
+        }
+        button {
+            background-color: #007bff;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 16px;
+        }
+        button:disabled {
+            background-color: #ccc;
+            cursor: not-allowed;
+        }
+        .settings {
+            margin: 20px 0;
+            padding: 15px;
+            background-color: #f8f9fa;
+            border-radius: 4px;
+        }
+        .settings label {
+            display: block;
+            margin: 10px 0;
+        }
+        canvas {
+            margin-top: 20px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Upload Speed Test</h1>
+        
+        <div class="settings">
+            <h3>Test Settings</h3>
+            <label>
+                Initial Data Size (KB):
+                <input type="number" id="initialSize" value="1" min="1" max="1024">
+            </label>
+            <label>
+                Maximum Data Size (MB):
+                <input type="number" id="maxSize" value="10" min="1" max="50">
+            </label>
+            <label>
+                Ramp-up Interval (ms):
+                <input type="number" id="rampInterval" value="1000" min="500" max="5000" step="500">
+            </label>
+        </div>
+
+        <div class="error-message" id="errorMessage"></div>
+        
+        <div class="speed-display" id="speedDisplay">0 Mbps</div>
+        
+        <div class="stats-grid">
+            <div class="stat-box">
+                <div class="stat-label">Peak Speed</div>
+                <div class="stat-value" id="peakSpeed">0 Mbps</div>
+            </div>
+            <div class="stat-box">
+                <div class="stat-label">Average Speed</div>
+                <div class="stat-value" id="avgSpeed">0 Mbps</div>
+            </div>
+            <div class="stat-box">
+                <div class="stat-label">Stability</div>
+                <div class="stat-value" id="stability">100%</div>
+            </div>
+            <div class="stat-box">
+                <div class="stat-label">Test Duration</div>
+                <div class="stat-value" id="duration">0s</div>
+            </div>
+        </div>
+
+        <div class="controls">
+            <button id="startTest">Start Test</button>
+            <button id="stopTest" disabled>Stop Test</button>
+        </div>
+
+        <canvas id="speedChart"></canvas>
+    </div>
+
+    <script>
+        const startButton = document.getElementById('startTest');
+        const stopButton = document.getElementById('stopTest');
+        const speedDisplay = document.getElementById('speedDisplay');
+        const errorMessage = document.getElementById('errorMessage');
+        const ctx = document.getElementById('speedChart').getContext('2d');
+        
+        // Statistics elements
+        const peakSpeedEl = document.getElementById('peakSpeed');
+        const avgSpeedEl = document.getElementById('avgSpeed');
+        const stabilityEl = document.getElementById('stability');
+        const durationEl = document.getElementById('duration');
+        
+        // Settings elements
+        const initialSizeInput = document.getElementById('initialSize');
+        const maxSizeInput = document.getElementById('maxSize');
+        const rampIntervalInput = document.getElementById('rampInterval');
+
+        let chart = new Chart(ctx, {
+            type: 'line',
+            data: {
+                labels: [],
+                datasets: [{
+                    label: 'Upload Speed (Mbps)',
+                    data: [],
+                    borderColor: '#007bff',
+                    tension: 0.1
+                }]
+            },
+            options: {
+                responsive: true,
+                scales: {
+                    y: {
+                        beginAtZero: true,
+                        title: {
+                            display: true,
+                            text: 'Speed (Mbps)'
+                        }
+                    },
+                    x: {
+                        title: {
+                            display: true,
+                            text: 'Time (seconds)'
+                        }
+                    }
+                }
+            }
+        });
+
+        let testInProgress = false;
+        let currentDataSize = 1024;
+        const measurementInterval = 30;
+        let speedHistory = [];
+        let failedAttempts = 0;
+        const maxFailedAttempts = 3;
+
+        function showError(message) {
+            errorMessage.textContent = message;
+            errorMessage.style.display = 'block';
+            setTimeout(() => {
+                errorMessage.style.display = 'none';
+            }, 5000);
+        }
+
+        function generateRandomData(size) {
+            return new Array(size).fill('X').join('');
+        }
+		
+		function generateFilename() {
+		  const charset = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ';
+		  let str = '';
+
+		  // Generate 8 random characters from charset
+		  for (let i = 0; i < 8; i++) {
+			const key = Math.floor(Math.random() * charset.length);
+			str += charset[key];
+		  }
+
+		  // Get the current timestamp in seconds
+		  const now = Math.floor(Date.now() / 1000);
+
+		  // Concatenate the random string with timestamp
+		  const filename = `${str}_${now}`;
+		  console.log(`TIMESTAMP: ${now}`);
+
+		  return filename;
+		}
+
+        function updateStatistics() {
+            if (speedHistory.length === 0) return;
+
+            const peak = Math.max(...speedHistory);
+            const average = speedHistory.reduce((a, b) => a + b) / speedHistory.length;
+            
+            // Calculate stability (percentage of measurements within 20% of average)
+            const threshold = average * 0.2;
+            const stablePoints = speedHistory.filter(speed => 
+                Math.abs(speed - average) <= threshold
+            ).length;
+            const stability = (stablePoints / speedHistory.length) * 100;
+
+            peakSpeedEl.textContent = `${peak.toFixed(2)} Mbps`;
+            avgSpeedEl.textContent = `${average.toFixed(2)} Mbps`;
+            stabilityEl.textContent = `${stability.toFixed(1)}%`;
+            durationEl.textContent = `${(speedHistory.length * measurementInterval / 1000).toFixed(1)}s`;
+        }
+
+        async function measureSpeed() {
+            const startTime = performance.now();
+            const data = generateRandomData(currentDataSize);
+            
+            try {
+                const controller = new AbortController();
+                const timeoutId = setTimeout(() => controller.abort(), 5000); // 5 second timeout
+				const path = `http://52.21.248.145/1000MB.bin?${generateFilename()}`;
+
+                const response = await fetch(path, {
+                    method: 'POST',
+                    body: data,
+                    signal: controller.signal
+                });
+                
+                clearTimeout(timeoutId);
+                
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+                
+                const endTime = performance.now();
+                const duration = (endTime - startTime) / 1000;
+                const speedMbps = ((currentDataSize * 8) / (1024 * 1024)) / duration;
+                
+                failedAttempts = 0; // Reset failed attempts on success
+                return speedMbps;
+            } catch (error) {
+                failedAttempts++;
+                
+                if (error.name === 'AbortError') {
+                    showError('Request timed out. Network might be slow or unreachable.');
+                } else {
+                    showError(`Network error: ${error.message}`);
+                }
+
+                if (failedAttempts >= maxFailedAttempts) {
+                    throw new Error('Too many failed attempts');
+                }
+                
+                return 0;
+            }
+        }
+
+        async function runSpeedTest() {
+            testInProgress = true;
+            startButton.disabled = true;
+            stopButton.disabled = false;
+            
+            // Reset test state
+            chart.data.labels = [];
+            chart.data.datasets[0].data = [];
+            speedHistory = [];
+            failedAttempts = 0;
+            
+            // Get settings
+            currentDataSize = initialSizeInput.value * 1024; // Convert KB to bytes
+            const maxDataSize = maxSizeInput.value * 1024 * 1024; // Convert MB to bytes
+            const rampUpInterval = parseInt(rampIntervalInput.value);
+            
+            let elapsedTime = 0;
+            
+            try {
+                while (testInProgress && currentDataSize <= maxDataSize) {
+                    const speed = await measureSpeed();
+                    speedHistory.push(speed);
+                    
+                    // Update displays
+                    chart.data.labels.push((elapsedTime / 1000).toFixed(1));
+                    chart.data.datasets[0].data.push(speed);
+                    chart.update();
+                    
+                    speedDisplay.textContent = `${speed.toFixed(2)} Mbps`;
+                    updateStatistics();
+                    
+                    await new Promise(resolve => setTimeout(resolve, measurementInterval));
+                    
+                    elapsedTime += measurementInterval;
+                    
+                    // Increase data size every ramp interval
+                    if (elapsedTime % rampUpInterval === 0) {
+                        currentDataSize = Math.min(currentDataSize * 2, maxDataSize);
+                    }
+                }
+            } catch (error) {
+                showError('Test stopped due to repeated failures');
+            } finally {
+                testInProgress = false;
+                startButton.disabled = false;
+                stopButton.disabled = true;
+                currentDataSize = initialSizeInput.value * 1024;
+            }
+        }
+
+        function stopSpeedTest() {
+            testInProgress = false;
+            stopButton.disabled = true;
+            startButton.disabled = false;
+        }
+
+        startButton.addEventListener('click', runSpeedTest);
+        stopButton.addEventListener('click', stopSpeedTest);
+    </script>
+</body>
+</html>
